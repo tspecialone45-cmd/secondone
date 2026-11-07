@@ -1,0 +1,56 @@
+name: mahila_bachat_gat
+description: "Mahila Bachat Gat (महिला बचत गट) - Women's Self-Help Savings Group Management App"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # State Management
+  flutter_riverpod: ^2.5.1
+
+  # Routing
+  go_router: ^14.2.0
+
+  # Firebase
+  firebase_core: ^3.1.0
+  firebase_auth: ^5.1.1
+  cloud_firestore: ^5.0.1
+  firebase_storage: ^12.0.1
+  firebase_messaging: ^15.0.1
+
+  # Utilities
+  intl: ^0.19.0
+  uuid: ^4.4.0
+  encrypt: ^5.0.3
+  crypto: ^3.0.3
+  shared_preferences: ^2.2.3
+  image_picker: ^1.1.2
+  cached_network_image: ^3.3.1
+
+  # PDF & Sharing
+  pdf: ^3.10.8
+  printing: ^5.13.1
+  share_plus: ^9.0.0
+
+  # UI & Visuals
+  flutter_svg: ^2.0.10+1
+  fl_chart: ^0.68.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  generate: true
+
+  assets:
+    - assets/images/
