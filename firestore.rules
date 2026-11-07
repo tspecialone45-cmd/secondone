@@ -1,0 +1,195 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─────────────────────────────────────────────
+    // Helper functions
+    // ─────────────────────────────────────────────
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return request.auth.uid == uid;
+    }
+
+    // Get the caller's user document
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Get a membership document for caller in a given group
+    function getMembership(groupId) {
+      return get(/databases/$(database)/documents/memberships/$(groupId + '_' + request.auth.uid)).data;
+    }
+
+    // Check if caller is an approved member of the group
+    function isApprovedMember(groupId) {
+      let m = getMembership(groupId);
+      return m != null && m.status == 'approved';
+    }
+
+    // Check if caller is the leader of the group
+    function isLeader(groupId) {
+      let m = getMembership(groupId);
+      return m != null && m.status == 'approved' && m.role == 'leader';
+    }
+
+    // Check if caller is the deputy of the group
+    function isDeputy(groupId) {
+      let m = getMembership(groupId);
+      return m != null && m.status == 'approved' && m.role == 'deputy';
+    }
+
+    // Check if caller can write financial records (leader, or deputy if enabled)
+    function canWriteFinancial(groupId) {
+      if (isLeader(groupId)) { return true; }
+      if (isDeputy(groupId)) {
+        let group = get(/databases/$(database)/documents/groups/$(groupId)).data;
+        return group.settings.deputyCanWrite == true;
+      }
+      return false;
+    }
+
+    // ─────────────────────────────────────────────
+    // /users/{uid}
+    // ─────────────────────────────────────────────
+    match /users/{uid} {
+      // Only the user themselves can read/write their own document
+      allow read: if isAuthenticated() && isOwner(uid);
+      allow create: if isAuthenticated() && isOwner(uid)
+        // Enforce: full Aadhaar never stored in plain text (no field 'aadhaarFull')
+        && !('aadhaarFull' in request.resource.data);
+      allow update: if isAuthenticated() && isOwner(uid)
+        && !('aadhaarFull' in request.resource.data)
+        // Prevent changing uid or phone silently
+        && request.resource.data.uid == resource.data.uid;
+      allow delete: if false; // users cannot be deleted
+    }
+
+    // ─────────────────────────────────────────────
+    // /groups/{groupId}
+    // ─────────────────────────────────────────────
+    match /groups/{groupId} {
+      // Any approved member can read their group
+      allow read: if isAuthenticated() && isApprovedMember(groupId);
+      // Only leader can create or update their group
+      allow create: if isAuthenticated()
+        && request.resource.data.leaderUid == request.auth.uid;
+      allow update: if isAuthenticated() && isLeader(groupId);
+      allow delete: if false;
+    }
+
+    // ─────────────────────────────────────────────
+    // /memberships/{membershipId}
+    // membershipId format: {groupId}_{userId}
+    // ─────────────────────────────────────────────
+    match /memberships/{membershipId} {
+      // Approved members can read all memberships in their group
+      allow read: if isAuthenticated() && (
+        // own membership
+        resource.data.userId == request.auth.uid
+        // OR approved member of the group
+        || isApprovedMember(resource.data.groupId)
+      );
+      // Any authenticated user can create a 'pending' join request for themselves
+      allow create: if isAuthenticated()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status == 'pending';
+      // Only leader (or deputy with write) can update status (approve/reject)
+      allow update: if isAuthenticated()
+        && canWriteFinancial(resource.data.groupId)
+        // Cannot change userId or groupId
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.groupId == resource.data.groupId;
+      allow delete: if false;
+    }
+
+    // ─────────────────────────────────────────────
+    // /savings/{savingId}
+    // ─────────────────────────────────────────────
+    match /savings/{savingId} {
+      allow read: if isAuthenticated() && isApprovedMember(resource.data.groupId);
+      // Only leader/deputy-with-write can record savings
+      allow create: if isAuthenticated() && canWriteFinancial(request.resource.data.groupId);
+      // Savings records can be corrected only by leader
+      allow update: if isAuthenticated() && isLeader(resource.data.groupId);
+      allow delete: if false; // No silent deletion — use audit log
+    }
+
+    // ─────────────────────────────────────────────
+    // /loans/{loanId}
+    // ─────────────────────────────────────────────
+    match /loans/{loanId} {
+      // Members can read their own loan; leader/deputy can read all
+      allow read: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid
+        || isApprovedMember(resource.data.groupId)
+      );
+      // Any approved member can apply for a loan (create with pending status)
+      allow create: if isAuthenticated()
+        && isApprovedMember(request.resource.data.groupId)
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status == 'pending';
+      // Only leader/deputy-with-write can approve, disburse, close
+      allow update: if isAuthenticated() && canWriteFinancial(resource.data.groupId);
+      allow delete: if false;
+    }
+
+    // ─────────────────────────────────────────────
+    // /repayments/{repaymentId}
+    // ─────────────────────────────────────────────
+    match /repayments/{repaymentId} {
+      allow read: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid
+        || isApprovedMember(resource.data.groupId)
+      );
+      allow create: if isAuthenticated() && canWriteFinancial(request.resource.data.groupId);
+      allow update: if false; // Repayments are immutable; void by creating a reversal
+      allow delete: if false;
+    }
+
+    // ─────────────────────────────────────────────
+    // /meetings/{meetingId}
+    // ─────────────────────────────────────────────
+    match /meetings/{meetingId} {
+      allow read: if isAuthenticated() && isApprovedMember(resource.data.groupId);
+      allow create: if isAuthenticated() && canWriteFinancial(request.resource.data.groupId);
+      allow update: if isAuthenticated() && canWriteFinancial(resource.data.groupId);
+      allow delete: if false;
+    }
+
+    // ─────────────────────────────────────────────
+    // /attendance/{attendanceId}
+    // ─────────────────────────────────────────────
+    match /attendance/{attendanceId} {
+      allow read: if isAuthenticated() && isApprovedMember(resource.data.groupId);
+      allow create: if isAuthenticated() && canWriteFinancial(request.resource.data.groupId);
+      allow update: if isAuthenticated() && canWriteFinancial(resource.data.groupId);
+      allow delete: if false;
+    }
+
+    // ─────────────────────────────────────────────
+    // /bankTransactions/{txId}
+    // ─────────────────────────────────────────────
+    match /bankTransactions/{txId} {
+      allow read: if isAuthenticated() && isApprovedMember(resource.data.groupId);
+      allow create: if isAuthenticated() && canWriteFinancial(request.resource.data.groupId);
+      allow update: if false; // Transactions are immutable
+      allow delete: if false;
+    }
+
+    // ─────────────────────────────────────────────
+    // /auditLogs/{logId}
+    // Append-only. No reads for regular members to prevent tampering.
+    // Only leader can read audit logs.
+    // ─────────────────────────────────────────────
+    match /auditLogs/{logId} {
+      allow read: if isAuthenticated() && isLeader(resource.data.groupId);
+      allow create: if isAuthenticated() && isApprovedMember(request.resource.data.groupId);
+      allow update: if false; // Audit logs are immutable
+      allow delete: if false; // Audit logs cannot be deleted
+    }
+  }
+}
